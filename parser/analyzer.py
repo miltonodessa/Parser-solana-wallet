@@ -111,12 +111,14 @@ class WalletAnalyzer:
             if not r.get("success"):
                 continue
             for ix in r.get("instructions", []) + r.get("inner_instructions", []):
-                decoded = ix.get("decoded") or {}
-                info = decoded.get("info", decoded)  # jsonParsed wraps in 'info'
-                ix_type = decoded.get("type", "") or (info.get("type", "") if isinstance(info, dict) else "")
+                decoded = ix.get("decoded")
+                # decoded can be a string (e.g. Memo program returns plain text)
+                if not isinstance(decoded, dict):
+                    continue
+
 
                 # jsonParsed format: {"type": "transfer", "info": {...}}
-                if isinstance(decoded, dict) and decoded.get("type") == "transfer":
+                if decoded.get("type") == "transfer":
                     info = decoded.get("info", {})
                     if isinstance(info, dict):
                         src = info.get("source", "")
