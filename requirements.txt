@@ -1,0 +1,15 @@
+# Core HTTP client
+requests>=2.31.0
+
+# Base58 encoding/decoding (Solana uses base-58 for addresses and raw data)
+base58>=2.1.1
+
+# Optional: Excel export
+openpyxl>=3.1.2
+
+# Optional: faster JSON (auto-used by requests if installed)
+# ujson>=5.8.0
+
+# Optional: use a private RPC with better rate limits
+# solana>=0.32.0          # official Python SDK (wraps RPC calls)
+# solders>=0.21.0         # Rust-backed Solana types (faster)
