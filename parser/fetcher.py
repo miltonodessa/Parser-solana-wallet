@@ -121,29 +121,40 @@ class SignatureFetcher:
         until: Optional[str] = None,
         commitment: str = config.COMMITMENT,
         on_page: Optional[callable] = None,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
     ) -> list[dict]:
         """
-        Retrieve every signature for *address*.
+        Retrieve signatures for *address*, optionally within a time window.
 
         Args:
             address:    Wallet public key.
             before:     Start pagination from this signature (exclusive).
                         Pass None to start from the most recent transaction.
             until:      Stop when this signature is reached (exclusive).
-                        Useful for incremental updates.
             commitment: "finalized" | "confirmed" | "processed"
-            on_page:    Optional callback(page_num, sigs_on_page) called after
-                        each page is fetched – useful for progress reporting.
+            on_page:    Optional callback(page_num, sigs_on_page).
+            start_time: Unix timestamp (inclusive). Pagination stops as soon
+                        as a page contains signatures older than this value —
+                        no unnecessary pages are fetched.
+            end_time:   Unix timestamp (inclusive). Signatures newer than this
+                        are skipped (without stopping pagination).
 
         Returns:
             List of signature-info dicts in reverse chronological order
-            (newest → oldest).
+            (newest → oldest), filtered to [start_time, end_time].
         """
         all_sigs: list[dict] = []
         page = 0
         cursor = before
 
         logger.info("Fetching signatures for %s …", address)
+        if start_time or end_time:
+            logger.info(
+                "  Date filter: %s → %s",
+                _fmt_ts(start_time) if start_time else "beginning",
+                _fmt_ts(end_time) if end_time else "now",
+            )
 
         while True:
             opts: dict[str, Any] = {
@@ -163,23 +174,45 @@ class SignatureFetcher:
             if not page_sigs:
                 break  # No more signatures
 
-            all_sigs.extend(page_sigs)
+            # ── Date filtering ──────────────────────────────────────────────
+            # Signatures arrive newest→oldest. blockTime may be None for very
+            # recent unconfirmed slots; treat None as "within range".
+            filtered: list[dict] = []
+            stop_pagination = False
+
+            for sig in page_sigs:
+                bt = sig.get("blockTime")
+                if bt is None:
+                    filtered.append(sig)
+                    continue
+                if end_time and bt > end_time:
+                    continue  # too new, skip but keep paging
+                if start_time and bt < start_time:
+                    stop_pagination = True  # all remaining pages will be older
+                    break
+                filtered.append(sig)
+
+            all_sigs.extend(filtered)
             page += 1
             logger.info(
-                "  Page %d: %d signatures (total: %d)",
-                page, len(page_sigs), len(all_sigs),
+                "  Page %d: %d/%d signatures in range (total: %d)",
+                page, len(filtered), len(page_sigs), len(all_sigs),
             )
 
             if on_page:
-                on_page(page, page_sigs)
+                on_page(page, filtered)
 
             # Rate-limit delay between pages
             time.sleep(config.REQUEST_DELAY)
 
+            if stop_pagination:
+                logger.info("  Reached start_time boundary — stopping pagination.")
+                break
+
             if len(page_sigs) < config.SIGNATURES_PER_PAGE:
                 break  # Last page (partial)
 
-            # Move cursor to the oldest signature on this page
+            # Move cursor to the oldest signature on this page (unfiltered)
             cursor = page_sigs[-1]["signature"]
 
         logger.info("Total signatures collected: %d", len(all_sigs))
@@ -335,3 +368,9 @@ class TransactionFetcher:
 def create_rpc_client(endpoint: Optional[str] = None) -> RPCClient:
     """Factory that returns an RPCClient, optionally with a custom endpoint."""
     return RPCClient(endpoint or config.RPC_URL)
+
+
+def _fmt_ts(ts: int) -> str:
+    """Format a Unix timestamp as a readable UTC string for logging."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")

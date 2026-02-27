@@ -32,10 +32,12 @@ python main.py <WALLET> -v
 from __future__ import annotations
 
 import argparse
+import calendar
 import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -96,6 +98,8 @@ def run(
     limit: Optional[int] = None,
     before: Optional[str] = None,
     until: Optional[str] = None,
+    start_time: Optional[int] = None,
+    end_time: Optional[int] = None,
     skip_xlsx: bool = False,
     commitment: str = config.COMMITMENT,
     verbose: bool = False,
@@ -108,6 +112,10 @@ def run(
     print(f"  Wallet  : {wallet}")
     print(f"  RPC     : {rpc_url}")
     print(f"  Output  : {output_dir}")
+    if start_time or end_time:
+        from_str = _ts_label(start_time) if start_time else "genesis"
+        to_str   = _ts_label(end_time)   if end_time   else "now"
+        print(f"  Period  : {from_str}  →  {to_str}")
     if limit:
         print(f"  Limit   : {limit:,} transactions")
     if before:
@@ -126,6 +134,8 @@ def run(
         before=before,
         until=until,
         commitment=commitment,
+        start_time=start_time,
+        end_time=end_time,
     )
 
     if limit:
@@ -284,8 +294,59 @@ def _parse_args() -> argparse.Namespace:
         metavar="N",
         help=f"Parallel worker threads for tx fetching (default: {config.MAX_WORKERS})",
     )
+    p.add_argument(
+        "--month", "-m",
+        default=None,
+        metavar="YYYY-MM",
+        help=(
+            "Fetch only transactions from a specific month, e.g. 2026-02. "
+            "Shorthand for --from-date / --to-date covering the full month."
+        ),
+    )
+    p.add_argument(
+        "--from-date",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Fetch transactions on or after this date (UTC).",
+    )
+    p.add_argument(
+        "--to-date",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Fetch transactions on or before this date (UTC, inclusive end of day).",
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     return p.parse_args()
+
+
+# ── Date helpers ───────────────────────────────────────────────────────────────
+
+def _parse_month(month_str: str) -> tuple[int, int]:
+    """'2026-02' → (start_unix, end_unix) covering the full month UTC."""
+    try:
+        dt = datetime.strptime(month_str, "%Y-%m").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise SystemExit(f"Invalid --month format '{month_str}'. Use YYYY-MM, e.g. 2026-02.")
+    last_day = calendar.monthrange(dt.year, dt.month)[1]
+    start_ts = int(dt.timestamp())
+    end_dt = dt.replace(day=last_day, hour=23, minute=59, second=59)
+    end_ts = int(end_dt.timestamp())
+    return start_ts, end_ts
+
+
+def _parse_date(date_str: str, end_of_day: bool = False) -> int:
+    """'2026-02-01' → Unix timestamp (start or end of day UTC)."""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise SystemExit(f"Invalid date format '{date_str}'. Use YYYY-MM-DD.")
+    if end_of_day:
+        dt = dt.replace(hour=23, minute=59, second=59)
+    return int(dt.timestamp())
+
+
+def _ts_label(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def main() -> None:
@@ -296,6 +357,18 @@ def main() -> None:
     config.REQUEST_DELAY = args.delay
     config.MAX_WORKERS = args.workers
 
+    # ── Resolve date filters ───────────────────────────────────────────────────
+    start_time: Optional[int] = None
+    end_time:   Optional[int] = None
+
+    if args.month:
+        start_time, end_time = _parse_month(args.month)
+    else:
+        if args.from_date:
+            start_time = _parse_date(args.from_date, end_of_day=False)
+        if args.to_date:
+            end_time = _parse_date(args.to_date, end_of_day=True)
+
     run(
         wallet=args.wallet,
         rpc_url=args.rpc,
@@ -303,6 +376,8 @@ def main() -> None:
         limit=args.limit,
         before=args.before,
         until=args.until,
+        start_time=start_time,
+        end_time=end_time,
         skip_xlsx=args.no_xlsx,
         commitment=args.commitment,
         verbose=args.verbose,
